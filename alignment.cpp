@@ -3,26 +3,31 @@
 #include <algorithm>
 using namespace std;
 
-/*
-vector<char> x = {'A', 'E', 'D'};
-vector<char> y = {'A', 'B', 'C', 'D'};
-*/
+/* Define costs */
+int cost_u = 2;
+int cost_s = 5;
 
-vector<char> x = {'C', 'G'};
-vector<char> y = {'C', 'A'};
+/* Examples of vectors x and y */
+//vector<char> x = {'A', 'E', 'D'};
+//vector<char> y = {'A', 'B', 'C', 'D'};
 
-/*
-vector<char> y = {'A', 'G', 'G', 'G', 'C', 'T'};
-vector<char> x = {'A', 'G', 'G', 'C', 'A'};
-*/
+//vector<char> x = {'C', 'G'};
+//vector<char> y = {'C', 'A'};
 
+//vector<char> y = {'A', 'G', 'G', 'G', 'C', 'T'};
+//vector<char> x = {'A', 'G', 'G', 'C', 'A'};
+
+vector<char> y = {'G', 'G', 'G', 'C', 'T'};
+vector<char> x = {'G', 'G', 'C', 'A'};
+
+/* Matrix of costs */
 vector<vector<int>> c (x.size()+1, vector<int>(y.size()+1, -1));
 
-
-int align(vector<char> x, vector<char> y, int i, int j);
-pair<string, string> reconstruct();
+/* Functions */
 void initC();
 void printC();
+int align(vector<char> x, vector<char> y, int i, int j);
+pair<string, string> reconstruct();
 
 
 int main(){
@@ -30,27 +35,12 @@ int main(){
     int cost = align(x, y, x.size()-1, y.size()-1);
     printC();
     pair<string, string> res = reconstruct();
-    cout << "Final X1: " << res.first << endl;
-    cout << "Final Y1: " << res.second << endl;
-    cout << "Cost: " << cost << endl;
+    cout << "Final X: " << res.first << endl;
+    cout << "Final Y: " << res.second << endl;
+    cout << "Alignment cost: " << cost << endl;
 }
 
-
-// print matrix c
-void printC(){
-    for(int i=0; i<c.size(); i++){
-        for(int j=0; j<c[0].size(); j++){
-            if(c[i][j] >= 0){
-                cout << " ";
-            }
-            cout << c[i][j] << " ";
-        }
-        cout << endl;
-    }
-}
-
-
-// init matrix c
+/* Init matrix c */
 void initC(){
     for(int i=0; i<c.size(); i++){
         c[i][0] = i*2;
@@ -60,46 +50,60 @@ void initC(){
     }
 }
 
+/* Print matrix c */
+void printC(){
+    for(int i=0; i<c.size(); i++){
+        for(int j=0; j<c[0].size(); j++){
+            if(c[i][j] >= 0) cout << " "; 
+            if(c[i][j]<10) cout << " "; 
+            cout << c[i][j] << " ";
+        }
+        cout << endl;
+    }
+}
 
-// compute minimum alignment cost
+/* Recursively compute minimum alignment cost */
 int align(vector<char> x, vector<char> y, int i, int j){
     if(c[i+1][j+1]==-1){
         if(x[i]==y[j]){
             c[i+1][j+1] = align(x, y, i-1, j-1);
         } else {
-            c[i+1][j+1] = min(align(x, y, i-1, j), align(x, y, i, j-1)) + min(2, 5);
+            int u1 = align(x, y, i-1, j) + cost_u;
+            int u2 = align(x, y, i, j-1) + cost_u;
+            int s1 = align(x, y, i-1, j-1) + cost_s*2;
+            c[i+1][j+1] = min({u1, u2, s1});
         }
     }
     return c[i+1][j+1];
 }
 
 
-// reconstruct solution
+/* Reconstruct aligned strings */
 pair<string, string> reconstruct(){
     vector<char> str1;
     vector<char> str2;
 
     int i = x.size()-1;
     int j = y.size()-1;
-    int iter = 0;
-    while( (i>=0 || j>=0)){
-        //cout << "i: " << i << " j: " << j << endl;
-        if(x[i] == y[j]){
+    while(i>=0 || j>=0){
+        if(i>=0 && j>=0 && x[i] == y[j]){
             str1.push_back(x[i]);
             str2.push_back(y[j]);
-            //cout << "   X1:" << x[i] << " Y1:" << y[j] << endl;
             i--;
             j--;
-        } else if(j>0 && c[i+1][j+1]==c[i+1][j]+2){
+        } else if(j>=0 && c[i+1][j+1]==c[i+1][j]+cost_u){
             str1.push_back('_');
             str2.push_back(y[j]);
-            //cout << "   X1:_" << " Y1:" << y[j] << endl;
             j--;
-        } else if(i>0 && c[i+1][j+1]==c[i][j+1]+2){
+        } else if(i>=0 && c[i+1][j+1]==c[i][j+1]+cost_u){
             str1.push_back(x[i]);
             str2.push_back('_');
-            //cout << "   X1:" << x[i] << " Y1:_" << endl;
             i--;
+        } else if(i>=0 && j>=0 && c[i+1][j+1]==c[i][j]+cost_s*2){
+            str1.push_back('*');
+            str2.push_back('*');
+            i--;
+            j--;
         }
     }
     std::string x1(str1.begin(), str1.end());
