@@ -179,7 +179,7 @@ int getInt(string name){
 }
 
 /* Generate two valid sequences with the maximum cost possible, given their length.
- * If the strings are longer than the number of available letters, they will contain all the letters:
+ * If the strings are longer than the number of available letters, they will contain all the letters.
  * Note that given this constraint, at least one letter will be aligned in the two strings.
  * parameters: length of the strings
  * return: strings of given length with maximum cost
