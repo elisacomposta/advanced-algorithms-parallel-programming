@@ -62,8 +62,8 @@ struct dictionary {
 size_t count_coverage(const string &dataset, const char *ngram) {
     size_t index = 0;
     size_t counter = 0;
-    const size_t ngram_size = ::strlen(ngram);
-    if(int(ngram_size) == 0 ) return -1;
+    const size_t ngram_size = strlen(ngram);
+    if(ngram_size==0) return -1;
     while (index < dataset.size()) {
         index = dataset.find(ngram, index);
         if (index != string::npos) {
@@ -86,7 +86,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    // get rank, size info
+    // get size and rank
     int world_size, world_rank;
     const int rc_size = MPI_Comm_size(MPI_COMM_WORLD , &world_size);
     exit_on_fail(rc_size);
@@ -149,7 +149,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
             stringData[i_str++] = current_word.ngram;
         }
     }
-    cerr << "P" << world_rank << " built " << stringData.size() << " permutations" << endl;
+    if(world_rank==0) cerr << "P0 built " << stringData.size() << " permutations" << endl;
 
     // here, all permutations have been computed (by P0 only)
     rc_br = MPI_Bcast(&n_permutations, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -170,74 +170,65 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     random_shuffle(stringData.begin(), stringData.end());
 
     // put all permutations on a single vector of char
+    const int charPerProcess = dataPerProcess * (max_pattern_len+1);
     vector<char> flatData;
+    flatData.reserve(charPerProcess * world_size);
     if(world_rank==0){
-        for (int i = 0; i < totalData; i++) {
-            for(char c: stringData[i]){
+        for(string str: stringData){
+            for(char c: str){   // copy str to char vector
                 flatData.push_back(c);
             }
-            flatData.push_back('\0');
+            for(int i=0; i<int(max_pattern_len+1 - str.size()); i++){ 
+                flatData.push_back('\0');   // fill with '\0'
+            }
         }
     }
 
-    // BROADCAST ALL PERMUTATIONS
-    int flat_size = flatData.size();
-    rc_br = MPI_Bcast(&flat_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    exit_on_fail(rc_br);
+    // buffer to store data to process
+    vector<char> localData(charPerProcess);
 
-    flatData.resize(flat_size);
-    rc_br = MPI_Bcast(flatData.data(), flat_size, MPI_CHAR, 0, MPI_COMM_WORLD);
-    exit_on_fail(rc_br);
+    // SCATTER DATA
+    const int rc_scatter = MPI_Scatter(flatData.data(), charPerProcess, MPI_CHAR, localData.data(), charPerProcess, MPI_CHAR, 0, MPI_COMM_WORLD);
+    exit_on_fail(rc_scatter);
 
-    // select the strings to process
+    // extract strings to process
     vector<string> dataToProcess;
-    int scanned_strings = 0;
-    string currentString = "";
-    for(int i=0; i<flat_size; i++){
-        char c = flatData[i];
-        if(c!='\0'){
+    dataToProcess.reserve(dataPerProcess);
+    for(int i=0; i<dataPerProcess; i++){
+        string currentString = "";
+        for(int j=0; j<int(max_pattern_len); j++){
+            char c = localData[i*(max_pattern_len+1)+j];
             currentString.push_back(c);
-        } else {
-            scanned_strings++;
-            if(scanned_strings > world_rank * dataPerProcess){
-                dataToProcess.push_back(currentString);
-                if(int(dataToProcess.size())==dataPerProcess){
-                    break;
-                }
-            }
-            currentString = "";
         }
+        dataToProcess.push_back(currentString);
     }
 
     // COMPUTE COVERAGE
-    vector<int> computed_coverage;
+    vector<int> computedCoverage;
+    computedCoverage.reserve(dataPerProcess);
     for(string s: dataToProcess){
         int coverage = count_coverage(database, s.c_str());
-        computed_coverage.push_back(coverage);
+        computedCoverage.push_back(coverage);
     }    
-    cerr << "P" << world_rank << " computed the coverage of " << computed_coverage.size() << " words" << endl;
+    cerr << "P" << world_rank << " computed the coverage of " << computedCoverage.size() << " words" << endl;
 
     // GATHER DATA
-    vector<int> gatheredData(totalData);
-    int rc_gather = MPI_Gather(computed_coverage.data(), dataPerProcess, MPI_INT,
+    vector<int> gatheredData(totalData, -1);
+    int rc_gather = MPI_Gather(computedCoverage.data(), dataPerProcess, MPI_INT,
             gatheredData.data(), dataPerProcess, MPI_INT, 0, MPI_COMM_WORLD);
     exit_on_fail(rc_gather);
-    int rc_barrier = MPI_Barrier(MPI_COMM_WORLD);
-    exit_on_fail(rc_barrier); 
-
-    if(world_rank==0) cerr << "P0 gathered " << gatheredData.size() << " results" << endl;
+    if(world_rank==0) cerr << "P0 gathered all the results" << endl;
 
     // OUTPUT RESULTS
-    // string_to_word: map permutation to word
-    // gatheredData: vector of (shuffled) coverages
-    // stringData: vector of (shuffled) strings
+    //    string_to_word: map permutation to word
+    //    gatheredData: vector of (shuffled) coverages
+    //    stringData: vector of (shuffled) strings
     if(world_rank==0){
         dictionary resultDict;
-
         for(int i=0; i<totalData; i++){
             string str = stringData[i];
             int cov = gatheredData[i];
-            if(str.size() > 0){
+            if(str.size() > 0){     // valid ngram
                 word current_word = string_to_word[str];
                 current_word.coverage = cov;
                 resultDict.add_word(current_word);
