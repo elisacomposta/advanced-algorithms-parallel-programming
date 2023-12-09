@@ -6,15 +6,9 @@
 #include <unordered_map>
 #include <vector>
 #include <string>
-#include <queue>
 #include <mpi.h>
 #include "mpi_error_check.hpp"
 using namespace std;
-
-// define tags
-const int tag_result = 0;
-const int tag_data = 1;
-const int tag_end_job = 2;
 
 // set the maximum size of the ngram
 static constexpr size_t max_pattern_len = 3;
@@ -22,7 +16,6 @@ static constexpr size_t max_dictionary_size = 100000000000;
 static_assert(max_pattern_len > 1, "The pattern must contain at least one character");
 static_assert(max_dictionary_size > 1, "The dictionary must contain at least one element");
 
-// simple class to represent a word of our dictionary
 struct word {
     char ngram[max_pattern_len + 1];  // the string data, statically allocated
     size_t size = 0;                  // the string size
@@ -37,32 +30,32 @@ struct word_coverage_gt_comparator {
     bool operator()(const word &w1, const word &w2) const { return w1.coverage > w2.coverage; }
 };
 
-// this is our dictionary of ngram
+// dictionary of ngrams
 struct dictionary {
-    std::vector<word> data;
-    std::vector<word>::iterator worst_element;
+    vector<word> data;
+    vector<word>::iterator worst_element;
 
     void add_word(word &new_word) {
         const auto coverage = new_word.coverage;
         if (data.size() < max_dictionary_size) {
-            data.emplace_back(std::move(new_word));
-            worst_element = std::end(data);
+            data.emplace_back(move(new_word));
+            worst_element = end(data);
         } else {
-            if (worst_element == std::end(data)) {
-                worst_element = std::min_element(std::begin(data), std::end(data), word_coverage_lt_comparator{});
+            if (worst_element == end(data)) {
+                worst_element = min_element(begin(data), end(data), word_coverage_lt_comparator{});
             }
             if (coverage > worst_element->coverage) {
-                *worst_element = std::move(new_word);
-                worst_element = std::end(data);
+                *worst_element = move(new_word);
+                worst_element = end(data);
             }
         }
     }
 
-    void write(std::ostream &out) const {
+    void write(ostream &out) const {
         for (const auto &word : data) {
-            out << word.ngram << ' ' << word.coverage << std::endl;
+            out << word.ngram << ' ' << word.coverage << endl;
         }
-        out << std::flush;
+        out << flush;
     }
 };
 
@@ -73,7 +66,7 @@ size_t count_coverage(const string &dataset, const char *ngram) {
     if(int(ngram_size) == 0 ) return -1;
     while (index < dataset.size()) {
         index = dataset.find(ngram, index);
-        if (index != std::string::npos) {
+        if (index != string::npos) {
         ++counter;
         index += ngram_size;
         }
@@ -83,6 +76,7 @@ size_t count_coverage(const string &dataset, const char *ngram) {
 
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
+
     // initialize the MPI environment
     int provided_thread_level;
     const int rc_init = MPI_Init_thread(&argc, &argv, MPI_THREAD_SINGLE, &provided_thread_level);
@@ -98,11 +92,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     exit_on_fail(rc_size);
     const int rc_rank = MPI_Comm_rank(MPI_COMM_WORLD , &world_rank);
     exit_on_fail(rc_rank);
-
-    /*if(world_size < 2){
-        printf("Not enough processes.\n");
-        return EXIT_FAILURE;
-    }*/
     
     // read database of SMILES and put them in a single string
     unordered_set<char> alphabet_builder;
@@ -137,7 +126,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         n_permutations += permutations[i];
     }
 
-    // map permutation to word
+    // map permutation string to word
     unordered_map<string, word> string_to_word;
     vector<string> stringData(n_permutations);
     int i_str = 0;
@@ -179,16 +168,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     }
 
     random_shuffle(stringData.begin(), stringData.end());
-    
-    /*if(world_rank==0){
-        cerr << "SHUFFLED DATA: "; 
-        for(string s: stringData){
-            cerr << s << " ";
-        }
-        cerr << endl;
-    }*/
 
-    // char data for scatter
+    // put all permutations on a single vector of char
     vector<char> flatData;
     if(world_rank==0){
         for (int i = 0; i < totalData; i++) {
@@ -199,8 +180,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         }
     }
 
-    
-    // BROADCAST DATA TO ELABORATE
+    // BROADCAST ALL PERMUTATIONS
     int flat_size = flatData.size();
     rc_br = MPI_Bcast(&flat_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
     exit_on_fail(rc_br);
@@ -209,7 +189,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     rc_br = MPI_Bcast(flatData.data(), flat_size, MPI_CHAR, 0, MPI_COMM_WORLD);
     exit_on_fail(rc_br);
 
-    // RECEIVE DATA and compute results
+    // select the strings to process
     vector<string> dataToProcess;
     int scanned_strings = 0;
     string currentString = "";
@@ -218,7 +198,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         if(c!='\0'){
             currentString.push_back(c);
         } else {
-            //stringa completata
             scanned_strings++;
             if(scanned_strings > world_rank * dataPerProcess){
                 dataToProcess.push_back(currentString);
@@ -230,6 +209,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         }
     }
 
+    // COMPUTE COVERAGE
     vector<int> computed_coverage;
     for(string s: dataToProcess){
         int coverage = count_coverage(database, s.c_str());
@@ -247,20 +227,11 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
 
     if(world_rank==0) cerr << "P0 gathered " << gatheredData.size() << " results" << endl;
 
-    /*if (world_rank == 0) {
-        cerr << "Gathered data: ";
-        for (int i = 0; i < totalData; i++) {
-            cerr << gatheredData[i] << " ";
-        }
-        cerr << endl;
-    }*/
-
+    // OUTPUT RESULTS
     // string_to_word: map permutation to word
     // gatheredData: vector of (shuffled) coverages
     // stringData: vector of (shuffled) strings
-
     if(world_rank==0){
-        // declare the dictionary that holds all the ngrams with the greatest coverage
         dictionary resultDict;
 
         for(int i=0; i<totalData; i++){
