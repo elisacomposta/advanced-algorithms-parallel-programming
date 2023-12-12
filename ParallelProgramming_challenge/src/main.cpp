@@ -3,7 +3,6 @@
 #include <cstring>
 #include <iostream>
 #include <unordered_set>
-#include <unordered_map>
 #include <vector>
 #include <string>
 #include <mpi.h>
@@ -12,7 +11,7 @@ using namespace std;
 
 // set the maximum size of the ngram
 static constexpr size_t max_pattern_len = 3;
-static constexpr size_t max_dictionary_size = 100000000000;
+static constexpr size_t max_dictionary_size = 128;
 static_assert(max_pattern_len > 1, "The pattern must contain at least one character");
 static_assert(max_dictionary_size > 1, "The dictionary must contain at least one element");
 
@@ -74,10 +73,20 @@ size_t count_coverage(const string &dataset, const char *ngram) {
     return counter * ngram_size;
 }
 
+/*  Allows sorting of pair<string,int>, according to the length of the string and its value.
+    For instance: x < aaa, a < x.  */
+bool comparePairs(const std::pair<std::string, int>& a, const std::pair<std::string, int>& b) {
+    if (a.first.length() != b.first.length()) {
+        return a.first.length() < b.first.length();
+    } else {
+        return a.first < b.first;
+    }
+}
+
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
 
-    // initialize the MPI environment
+    /* Initialize the MPI environment */
     int provided_thread_level;
     const int rc_init = MPI_Init_thread(&argc, &argv, MPI_THREAD_SINGLE, &provided_thread_level);
     exit_on_fail(rc_init);
@@ -86,14 +95,15 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    // get size and rank
+    /* Get size and rank */
     int world_size, world_rank;
     const int rc_size = MPI_Comm_size(MPI_COMM_WORLD , &world_size);
     exit_on_fail(rc_size);
     const int rc_rank = MPI_Comm_rank(MPI_COMM_WORLD , &world_rank);
     exit_on_fail(rc_rank);
     
-    // read database of SMILES and put them in a single string
+    /* Read database of SMILES and put them in a single string
+       NOTE: only P0 can read the content in input */
     unordered_set<char> alphabet_builder;
     string database;
     database.reserve(209715200);  // 200MB
@@ -104,6 +114,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         }
     }
     
+    /* P0 broadcasts the database, since the other processes will need it to compute the coverage */
     int database_size = database.size();
     int rc_br = MPI_Bcast(&database_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
     exit_on_fail(rc_br);
@@ -112,12 +123,13 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     rc_br = MPI_Bcast(database.data(), database_size, MPI_CHAR, 0, MPI_COMM_WORLD);
     exit_on_fail(rc_br);   
 
-    // put the alphabet in a container with random access capabilities
+    /* Put the alphabet in a container with random access capabilities */
     vector<char> alphabet;
     alphabet_builder.reserve(alphabet_builder.size());
     for_each(begin(alphabet_builder), end(alphabet_builder), [&alphabet](const auto character) {alphabet.push_back(character); });
 
-    // precompute the number of permutations according to the number of characters
+    /* Precompute the number of permutations according to the number of characters
+       NOTE: only P0 has the real alphabet */
     auto permutations = vector(max_pattern_len, alphabet.size());
     int n_permutations = alphabet.size();
 
@@ -126,39 +138,36 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         n_permutations += permutations[i];
     }
 
-    // map permutation string to word
-    unordered_map<string, word> string_to_word;
+    /* P0 broadcasts the total number of permutations */
+    rc_br = MPI_Bcast(&n_permutations, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    exit_on_fail(rc_br);
+
+    /* Define data structure to hold all the permutations */
     vector<string> stringData(n_permutations);
     int i_str = 0;
 
-    // this outer loop goes through the n-gram with different sizes
+    /* Compute the permutations and put them in the data structure.
+       NOTE: only P0 has the real alphabet, so only P0 computes the permutations. */
     for (size_t ngram_size{1}; ngram_size <= max_pattern_len; ++ngram_size) {
-        // this loop goes through all the permutation of the current ngram-size
         const auto num_words = permutations[ngram_size - size_t{1}];
-        for (size_t word_index{0}; word_index < num_words; ++word_index) {  // only P0 in here
-            // compose the ngram
-            word current_word;
-            memset(current_word.ngram, '\0', max_pattern_len + 1);
+        for (size_t word_index{0}; word_index < num_words; ++word_index) {
+            char ngram[max_pattern_len+1];
+            memset(ngram, '\0', max_pattern_len + 1);
             for (size_t character_index{0}, remaining_size = word_index; character_index < ngram_size;
                 ++character_index, remaining_size /= alphabet.size()) {
-                current_word.ngram[character_index] = alphabet[remaining_size % alphabet.size()];
+                ngram[character_index] = alphabet[remaining_size % alphabet.size()];
             }
-            current_word.size = ngram_size;
-
-            string_to_word[current_word.ngram] = current_word;
-            stringData[i_str++] = current_word.ngram;
+            stringData[i_str++] = ngram;
         }
     }
     if(world_rank==0) cerr << "P0 built " << stringData.size() << " permutations" << endl;
 
-    // here, all permutations have been computed (by P0 only)
-    rc_br = MPI_Bcast(&n_permutations, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    exit_on_fail(rc_br);
-
+    /* Define useful parameters */
     const int n_data = n_permutations;
-
     int dataPerProcess = n_data / world_size;
     int totalData = n_data;
+
+    /* If needed, add empty strings to the data structure, to allow perfect split when scattering */
     if(n_data % world_size != 0){
         totalData = (dataPerProcess+1) * world_size; 
         dataPerProcess = totalData / world_size;  
@@ -167,9 +176,16 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         }
     }
 
+    /* Shuffle the permutations to allow load balancing:
+       without shuffle, some processes might get only strings of lenght 1, others only with maximum length.
+       Moreover, wothout shuffling, the last process might get a lot of empty strings.
+       So, for load balancing, shuffling is required.
+    */
     random_shuffle(stringData.begin(), stringData.end());
 
-    // put all permutations on a single vector of char
+    /* Put all permutations on a single vector of char.
+       NOTE: each permutation must occupy 4 chars, so '\0' is used for padding, to allow a correct scatter.
+    */
     const int charPerProcess = dataPerProcess * (max_pattern_len+1);
     vector<char> flatData;
     flatData.reserve(charPerProcess * world_size);
@@ -184,14 +200,14 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         }
     }
 
-    // buffer to store data to process
+    /* Define the buffer to store data to process */
     vector<char> localData(charPerProcess);
 
-    // SCATTER DATA
+    /* SCATTER DATA */
     const int rc_scatter = MPI_Scatter(flatData.data(), charPerProcess, MPI_CHAR, localData.data(), charPerProcess, MPI_CHAR, 0, MPI_COMM_WORLD);
     exit_on_fail(rc_scatter);
 
-    // extract strings to process
+    /* Extract strings to work on */
     vector<string> dataToProcess;
     dataToProcess.reserve(dataPerProcess);
     for(int i=0; i<dataPerProcess; i++){
@@ -203,7 +219,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         dataToProcess.push_back(currentString);
     }
 
-    // COMPUTE COVERAGE
+    /* COMPUTE COVERAGE */
     vector<int> computedCoverage;
     computedCoverage.reserve(dataPerProcess);
     for(string s: dataToProcess){
@@ -212,24 +228,40 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     }    
     cerr << "P" << world_rank << " computed the coverage of " << computedCoverage.size() << " words" << endl;
 
-    // GATHER DATA
+    /* GATHER DATA */
     vector<int> gatheredData(totalData, -1);
     int rc_gather = MPI_Gather(computedCoverage.data(), dataPerProcess, MPI_INT,
             gatheredData.data(), dataPerProcess, MPI_INT, 0, MPI_COMM_WORLD);
     exit_on_fail(rc_gather);
     if(world_rank==0) cerr << "P0 gathered all the results" << endl;
 
-    // OUTPUT RESULTS
-    //    string_to_word: map permutation to word
-    //    gatheredData: vector of (shuffled) coverages
-    //    stringData: vector of (shuffled) strings
+    
+    /* Sort strings to produce the same output as the serial version of the code.
+       Otherwise, since the dictionary has a limited size, 
+       words would be added to the dictionary in a different order, and some words might be replaced
+       by other words with the same coverage.
+        - stringData: vector of (shuffled) strings
+        - gatheredData: vector of (shuffled) coverages
+    */
+    const int n_str = stringData.size();
+    vector<pair<string,int>> zip(n_str);
+    for(int i=0; i<int(n_str); i++){
+        zip[i] = {stringData[i], gatheredData[i]};
+    }
+    
+    sort(zip.begin(), zip.end(), comparePairs);
+
+    /* OUTPUT RESULTS */
     if(world_rank==0){
         dictionary resultDict;
         for(int i=0; i<totalData; i++){
-            string str = stringData[i];
-            int cov = gatheredData[i];
+            string str = zip[i].first;
+            int cov = zip[i].second;
             if(str.size() > 0){     // valid ngram
-                word current_word = string_to_word[str];
+                word current_word;
+                memset(current_word.ngram, '\0', max_pattern_len + 1);
+                strcpy(current_word.ngram, str.c_str());
+                current_word.size = str.size();
                 current_word.coverage = cov;
                 resultDict.add_word(current_word);
             }
@@ -241,9 +273,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
         cerr << "Results stored in output.csv" << endl;
     }
 
+    /* Clear the MPI environment */
     cerr << "P" << world_rank << " finalizing.." << endl;
-
-    // clear the MPI environment
     const int rc_finalize = MPI_Finalize();
     exit_on_fail(rc_finalize);
     return EXIT_SUCCESS;

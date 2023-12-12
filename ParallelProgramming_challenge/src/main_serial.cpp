@@ -9,7 +9,7 @@
 
 // set the maximum size of the ngram
 static constexpr size_t max_pattern_len = 3;
-static constexpr size_t max_dictionary_size = 1000000000000;
+static constexpr size_t max_dictionary_size = 128;
 static_assert(max_pattern_len > 1, "The pattern must contain at least one character");
 static_assert(max_dictionary_size > 1, "The dictionary must contain at least one element");
 
