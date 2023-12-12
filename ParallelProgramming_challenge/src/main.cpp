@@ -103,7 +103,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     exit_on_fail(rc_rank);
     
     /* Read database of SMILES and put them in a single string
-       NOTE: only P0 can read the content in input */
+       NOTE: only P0 reads a non-empty content in input */
     unordered_set<char> alphabet_builder;
     string database;
     database.reserve(209715200);  // 200MB
@@ -220,20 +220,19 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     }
 
     /* COMPUTE COVERAGE */
+    if(world_rank==0) cerr << "Computing the coverage of all permutations..." << endl;
     vector<int> computedCoverage;
     computedCoverage.reserve(dataPerProcess);
     for(string s: dataToProcess){
         int coverage = count_coverage(database, s.c_str());
         computedCoverage.push_back(coverage);
     }    
-    cerr << "P" << world_rank << " computed the coverage of " << computedCoverage.size() << " words" << endl;
 
     /* GATHER DATA */
     vector<int> gatheredData(totalData, -1);
     int rc_gather = MPI_Gather(computedCoverage.data(), dataPerProcess, MPI_INT,
             gatheredData.data(), dataPerProcess, MPI_INT, 0, MPI_COMM_WORLD);
     exit_on_fail(rc_gather);
-    if(world_rank==0) cerr << "P0 gathered all the results" << endl;
 
     
     /* Sort strings to produce the same output as the serial version of the code.
@@ -274,7 +273,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     }
 
     /* Clear the MPI environment */
-    cerr << "P" << world_rank << " finalizing.." << endl;
     const int rc_finalize = MPI_Finalize();
     exit_on_fail(rc_finalize);
     return EXIT_SUCCESS;
